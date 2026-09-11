@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-webhook-code
+data:
+  app.py: |
+    from fastapi import FastAPI, Request
+    import logging
+
+    app = FastAPI()
+
+    logging.basicConfig(level=logging.INFO)
+    log = logging.getLogger("mlflow-webhook")
+
+
+    @app.get("/health")
+    async def health():
+        return {"status": "healthy"}
+
+
+    @app.post("/mlflow")
+    async def mlflow_webhook(request: Request):
+
+        body = await request.json()
+
+        entity = body.get("entity")
+        action = body.get("action")
+        data = body.get("data", {})
+
+        # Only process MLflow model-version alias creation events
+        if entity != "model_version_alias" or action != "created":
+            log.info(
+                "IGNORED: entity=%s action=%s",
+                entity,
+                action
+            )
+            return {"status": "ignored"}
+
+
+        # Only process the "candidate" alias
+        alias = data.get("alias")
+
+        if alias != "candidate":
+            log.info(
+                "IGNORED: model=%s version=%s alias=%s",
+                data.get("name"),
+                data.get("version"),
+                alias
+            )
+            return {"status": "ignored"}
+
+
+        model_name = data.get("name")
+        version = data.get("version")
+
+        # This is where the real promotion trigger will eventually go
+        log.info(
+            "PROMOTION TRIGGERED: model=%s version=%s alias=%s",
+            model_name,
+            version,
+            alias
+        )
+
+        return {
+            "status": "accepted",
+            "action": "promote",
+            "model": model_name,
+            "version": version,
+            "alias": alias
+        }
+
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-webhook
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: mlflow-webhook
+
+  template:
+    metadata:
+      labels:
+        app: mlflow-webhook
+
+    spec:
+      containers:
+        - name: webhook
+
+          image: python:3.12-slim
+
+          command:
+            - /bin/sh
+            - -c
+
+          args:
+            - |
+              pip install --no-cache-dir fastapi uvicorn[standard] &&
+              uvicorn app:app --host 0.0.0.0 --port 8000
+
+          ports:
+            - containerPort: 8000
+
+          volumeMounts:
+            - name: code
+              mountPath: /app
+
+          workingDir: /app
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+      volumes:
+        - name: code
+          configMap:
+            name: mlflow-webhook-code
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-webhook
+spec:
+  selector:
+    app: mlflow-webhook
+
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-webhook
+spec:
+  to:
+    kind: Service
+    name: mlflow-webhook
+
+  port:
+    targetPort: http
+
+  tls:
+    termination: edge
