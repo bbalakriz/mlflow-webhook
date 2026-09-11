@@ -1,0 +1,46 @@
+apiVersion: v1
+data:
+  MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY: <<FIXED SECRET>>
+kind: Secret
+metadata:
+  name: mlflow-webhook-encryption-key
+  namespace: redhat-ods-applications
+type: Opaque
+---
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow-setup
+spec:
+  artifactsDestination: file:///mlflow/artifacts
+  backendStoreUri: sqlite:////mlflow/mlflow.db
+  env:
+  - name: MLFLOW_WEBHOOK_ALLOWED_SCHEMES
+    value: http,https
+  - name: MLFLOW_WEBHOOK_ALLOW_PRIVATE_IPS
+    value: "true"
+  - name: MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY
+    valueFrom:
+      secretKeyRef:
+        key: MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY
+        name: mlflow-webhook-encryption-key
+  migration:
+    mode: Automatic
+  networkPolicyAdditionalEgressRules:
+  - ports:
+    - port: 8000
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: agent-pack #update to the namespace where the webhook receiver is hosted
+  replicas: 1
+  serveArtifacts: true
+  serviceAccountName: mlflow-sa
+  storage:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 2Gi
+  workers: 1
